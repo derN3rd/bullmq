@@ -496,6 +496,13 @@ export class QueueGetters<JobBase extends Job = Job> extends QueueBase {
     return this.baseGetClients((name: string) => name === clientName);
   }
 
+  getMetricsKeys = (type: 'completed' | 'failed') => {
+    return {
+      metricsKey: this.toKey(`metrics:${type}`),
+      dataKey: this.toKey(`metrics:${type}:data`),
+    };
+  };
+
   /**
    * Get queue metrics related to the queue.
    *
@@ -516,8 +523,7 @@ export class QueueGetters<JobBase extends Job = Job> extends QueueBase {
     end = -1,
   ): Promise<Metrics> {
     const client = await this.client;
-    const metricsKey = this.toKey(`metrics:${type}`);
-    const dataKey = `${metricsKey}:data`;
+    const { metricsKey, dataKey } = this.getMetricsKeys(type);
 
     const multi = client.multi();
     multi.hmget(metricsKey, 'count', 'prevTS', 'prevCount');
@@ -573,6 +579,7 @@ export class QueueGetters<JobBase extends Job = Job> extends QueueBase {
   /**
    * Export the metrics for the queue in the Prometheus format.
    * Automatically exports all the counts returned by getJobCounts().
+   * Includes the counter of "completed" and "failed" jobs if metrics are enabled.
    *
    * @returns - Returns a string with the metrics in the Prometheus format.
    *
@@ -603,6 +610,33 @@ export class QueueGetters<JobBase extends Job = Job> extends QueueBase {
         `bullmq_job_count{queue="${this.name}", state="${state}"${variables}} ${count}`,
       );
     }
+
+    /**
+     * Get the counter of completed or failed jobs.
+     *
+     * Not reusing getMetrics method here, as it fetches multiple other things that we don't need.
+     */
+    const getMetricsCounter = async (type: 'completed' | 'failed') => {
+      const client = await this.client;
+      const { metricsKey } = this.getMetricsKeys(type);
+      const count = await client.hget(metricsKey, 'count');
+
+      return parseInt(count || '0', 10);
+    };
+
+    const completedMetricsCounter = await getMetricsCounter('completed');
+    const failedMetricsCounter = await getMetricsCounter('failed');
+
+    metrics.push(
+      '# HELP bullmq_job_amount Number of jobs processed in the queue by state',
+    );
+    metrics.push('# TYPE bullmq_job_amount counter');
+    metrics.push(
+      `bullmq_job_amount{queue="${this.name}", state="completed"${variables}} ${completedMetricsCounter}`,
+    );
+    metrics.push(
+      `bullmq_job_amount{queue="${this.name}", state="failed"${variables}} ${failedMetricsCounter}`,
+    );
 
     return metrics.join('\n');
   }

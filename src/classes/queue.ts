@@ -1043,4 +1043,24 @@ export class Queue<
     const client = await this.client;
     return client.del(this.toKey('priority'));
   }
+
+  /**
+   * Deletes all saved metrics for a queue.
+   */
+  async resetMetrics(): Promise<void> {
+    const client = await this.client;
+    const multi = client.multi();
+
+    const { metricsKey: metricsKeyCompleted, dataKey: dataKeyCompleted } =
+      this.getMetricsKeys('completed');
+    const { metricsKey: metricsKeyFailed, dataKey: dataKeyFailed } =
+      this.getMetricsKeys('failed');
+
+    multi.del(metricsKeyCompleted);
+    multi.del(dataKeyCompleted);
+    multi.del(metricsKeyFailed);
+    multi.del(dataKeyFailed);
+
+    await multi.exec();
+  }
 }
