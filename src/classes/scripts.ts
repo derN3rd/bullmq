@@ -724,6 +724,10 @@ export class Scripts {
         maxMetricsSize: opts.metrics?.maxDataPoints
           ? opts.metrics?.maxDataPoints
           : '',
+        collectTimings: opts.metrics?.collectTimings ? '1' : '0',
+        timingBucketSeconds: (
+          opts.metrics?.timingBucketSeconds || 15
+        ).toString(),
         fpof: !!job.opts?.failParentOnFailure,
         cpof: !!job.opts?.continueParentOnFailure,
         idof: !!job.opts?.ignoreDependencyOnFailure,
@@ -930,6 +934,34 @@ export class Scripts {
     const args = this.getDependencyCountsArgs(jobId, types);
 
     return await this.execCommand(client, 'getDependencyCounts', args);
+  }
+
+  /**
+   * Get execution time percentiles for all jobs (completed and failed combined)
+   *
+   * @param timeWindowSeconds - How many seconds back to look (default: 900 = 15 minutes)
+   * @param bucketSizeSeconds - Bucket size in seconds (default: 15)
+   * @returns Promise resolving to [p50, p95, p99, sampleCount]
+   */
+  async getExecutionPercentiles(
+    timeWindowSeconds = 900,
+    bucketSizeSeconds = 15,
+  ): Promise<[number, number, number, number]> {
+    const client = await this.queue.client;
+    const metricsKey = this.queue.toKey('metrics');
+    const currentTimestamp = Date.now();
+
+    const result = await this.execCommand(
+      client,
+      'getExecutionPercentiles',
+      [metricsKey].concat([
+        timeWindowSeconds.toString(),
+        currentTimestamp.toString(),
+        bucketSizeSeconds.toString(),
+      ]),
+    );
+
+    return result as [number, number, number, number];
   }
 
   moveToCompletedArgs<T = any, R = any, N extends string = string>(
