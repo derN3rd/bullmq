@@ -39,6 +39,8 @@
       opts - lockDuration - lock duration in milliseconds
       opts - attempts max attempts
       opts - maxMetricsSize
+      opts - collectTimings
+      opts - timingBucketSeconds
       opts - fpof - fail parent on fail
       opts - cpof - continue parent on fail
       opts - idof - ignore dependency on fail
@@ -105,10 +107,12 @@ if rcall("EXISTS", jobIdKey) == 1 then -- Make sure job exists
 
     local attempts = opts['attempts']
     local maxMetricsSize = opts['maxMetricsSize']
+    local collectTimings = opts['collectTimings'] or '0'
+    local timingBucketSeconds = opts['timingBucketSeconds'] or '15'
     local maxCount = opts['keepJobs']['count']
     local maxAge = opts['keepJobs']['age']
 
-    local jobAttributes = rcall("HMGET", jobIdKey, "parentKey", "parent", "deid")
+    local jobAttributes = rcall("HMGET", jobIdKey, "parentKey", "parent", "deid", "processedOn")
     local parentKey = jobAttributes[1] or ""
     local parentId = ""
     local parentQueueKey = ""
@@ -202,7 +206,17 @@ if rcall("EXISTS", jobIdKey) == 1 then -- Make sure job exists
 
     -- Collect metrics
     if maxMetricsSize ~= "" then
-        collectMetrics(KEYS[13], KEYS[13] .. ':data', maxMetricsSize, timestamp)
+        -- Calculate execution time if both timestamps exist
+        local executionTime = nil
+        local processedOn = jobAttributes[4] -- processedOn is the 4th element
+        if processedOn and processedOn ~= "" then
+            local processedOnNum = tonumber(processedOn)
+            if processedOnNum and processedOnNum > 0 then
+                executionTime = timestamp - processedOnNum
+            end
+        end
+        
+        collectMetrics(KEYS[13], KEYS[13] .. ':data', maxMetricsSize, timestamp, executionTime, collectTimings, timingBucketSeconds)
     end
 
     -- Try to get next job to avoid an extra roundtrip if the queue is not closing,

@@ -553,6 +553,27 @@ export class QueueGetters<JobBase extends Job = Job> extends QueueBase {
     };
   }
 
+  /**
+   * Get execution time percentiles for all jobs (completed and failed combined).
+   * This method does not modify the data and is safe to call from multiple
+   * Prometheus exporters simultaneously.
+   *
+   * @param timeWindowSeconds - How many seconds back to look (default: 900 = 15 minutes)
+   * @param bucketSizeSeconds - Bucket size in seconds (should match your metrics configuration, default: 15)
+   * @returns Object with p50, p95, p99 percentiles and sample count
+   */
+  async getExecutionTimePercentiles(
+    timeWindowSeconds = 900,
+    bucketSizeSeconds = 15,
+  ): Promise<{ p50: number; p95: number; p99: number; count: number }> {
+    const [p50, p95, p99, count] = await this.scripts.getExecutionPercentiles(
+      timeWindowSeconds,
+      bucketSizeSeconds,
+    );
+
+    return { p50, p95, p99, count };
+  }
+
   private parseClientList(list: string, matcher: (name: string) => boolean) {
     const lines = list.split(/\r?\n/);
     const clients: { [index: string]: string }[] = [];
@@ -580,7 +601,9 @@ export class QueueGetters<JobBase extends Job = Job> extends QueueBase {
    * Export the metrics for the queue in the Prometheus format.
    * Automatically exports all the counts returned by getJobCounts().
    * Includes the counter of "completed" and "failed" jobs if metrics are enabled.
+   * Includes job execution time percentiles if timing collection is enabled.
    *
+   * @param globalVariables - Additional labels to add to all metrics
    * @returns - Returns a string with the metrics in the Prometheus format.
    *
    * @see {@link https://prometheus.io/docs/instrumenting/exposition_formats/}
@@ -588,6 +611,17 @@ export class QueueGetters<JobBase extends Job = Job> extends QueueBase {
    **/
   async exportPrometheusMetrics(
     globalVariables?: Record<string, string>,
+    timingMetricsOptions?: {
+      /**
+       * How many seconds back to look (default: 15s)
+       */
+      timeWindowSeconds?: number;
+      /**
+       * Bucket size in seconds (default: 15s).
+       * Needs to be set to the same as in the worker options.
+       */
+      bucketSizeSeconds?: number;
+    },
   ): Promise<string> {
     const counts = await this.getJobCounts();
     const metrics: string[] = [];
@@ -637,6 +671,45 @@ export class QueueGetters<JobBase extends Job = Job> extends QueueBase {
     metrics.push(
       `bullmq_job_amount{queue="${this.name}", state="failed"${variables}} ${failedMetricsCounter}`,
     );
+
+    // Add execution time percentiles if timing collection is enabled
+    try {
+      const timings = await this.getExecutionTimePercentiles(
+        timingMetricsOptions?.timeWindowSeconds,
+        timingMetricsOptions?.bucketSizeSeconds,
+      );
+
+      metrics.push(
+        '# HELP bullmq_job_duration_percentiles Job execution time percentiles in milliseconds',
+      );
+      metrics.push('# TYPE bullmq_job_duration_percentiles gauge');
+
+      // Add percentile metrics
+      metrics.push(
+        `bullmq_job_duration_percentiles{queue="${this.name}", percentile="50"${variables}} ${timings.p50}`,
+      );
+      metrics.push(
+        `bullmq_job_duration_percentiles{queue="${this.name}", percentile="95"${variables}} ${timings.p95}`,
+      );
+      metrics.push(
+        `bullmq_job_duration_percentiles{queue="${this.name}", percentile="99"${variables}} ${timings.p99}`,
+      );
+
+      // Add sample count for observability
+      metrics.push(
+        '# HELP bullmq_job_duration_samples Number of timing samples used for percentile calculation',
+      );
+      metrics.push('# TYPE bullmq_job_duration_samples gauge');
+      metrics.push(
+        `bullmq_job_duration_samples{queue="${this.name}"${variables}} ${timings.count}`,
+      );
+    } catch (error) {
+      // Log error but don't fail the entire metrics export
+      console.warn(
+        `Failed to collect timing metrics for queue ${this.name}:`,
+        error,
+      );
+    }
 
     return metrics.join('\n');
   }
